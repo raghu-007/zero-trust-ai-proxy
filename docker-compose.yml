@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  proxy:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/code/app
+      - ./zero_trust.db:/code/zero_trust.db
+    environment:
+      - PYTHONUNBUFFERED=1
