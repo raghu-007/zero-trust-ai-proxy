@@ -1,18 +1,41 @@
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+from datetime import datetime, timezone
 import json
 
 from . import models, database, security, tools
+from .middleware import RateLimitMiddleware
 
 # Create the database tables
 models.Base.metadata.create_all(bind=database.engine)
 
-app = FastAPI(title="Zero-Trust AI Agent Proxy")
+app = FastAPI(
+    title="Zero-Trust AI Agent Proxy",
+    description="A secure proxy layer for AI Agents enforcing RBAC, audit logging, and PII redaction.",
+    version="1.0.0",
+)
+
+# --- Middleware ---
+
+# Rate limiting: 60 requests per minute per IP
+app.add_middleware(RateLimitMiddleware, max_requests=60, window_seconds=60)
+
+# CORS: Lock down in production, allow all for local dev
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # TODO: Restrict to specific frontend origins in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 class ExecuteRequest(BaseModel):
     tool_name: str
     args: dict
+
 
 @app.post("/execute")
 def execute_tool(
@@ -67,6 +90,12 @@ def execute_tool(
     
     return json.loads(safe_result)
 
+
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    """Health check endpoint for monitoring and load balancers."""
+    return {
+        "status": "ok",
+        "version": app.version,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }

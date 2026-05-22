@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   proxy:
     build: .
@@ -10,3 +8,4 @@ services:
       - ./zero_trust.db:/code/zero_trust.db
     environment:
       - PYTHONUNBUFFERED=1
+    restart: unless-stopped
