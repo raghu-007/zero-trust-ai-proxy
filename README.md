@@ -1,120 +1,182 @@
-# Zero-Trust AI Agent Control Plane
+# Zero-Trust AI Proxy — local prototype
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com)
+A small FastAPI control plane demonstrating generated agent credentials,
+per-agent tool permissions, structured output redaction, and metadata-only audits.
 
-A secure, enterprise-grade proxy layer for AI Agents (like LangChain, AutoGPT, or custom bots).
+**Both connectors are mocks.** They make no GitHub commits, execute no SQL queries,
+and contact no AI providers. This project is a learning/reference implementation,
+not a production-certified zero-trust platform.
 
-## The Problem
-When deploying AI agents into an enterprise environment, they need access to internal APIs, databases, and infrastructure to be useful. However, giving an LLM direct access to these tools is a massive security risk (Prompt Injection, Data Exfiltration, Accidental Deletion).
+## What is implemented
 
-## The Solution
-This project acts as an **FDE (Forward Deployed Engineering) Control Plane**. The AI agent never executes tools directly. Instead, it sends a request to this proxy.
+- Random 256-bit agent keys, stored as SHA-256 digests, with explicit rotation.
+- Strict request and tool-argument contracts; unknown tools and extra fields fail.
+- Permission checks and durable execution intent before a connector is called.
+- Structured JSON redaction, including nested sensitive fields and numeric values.
+- Audits containing identifiers and outcomes rather than raw arguments or results.
+- Bounded per-process rate-limit state, a 32 KiB input limit, and a body timeout.
+- CORS disabled by default, explicit host allowlists, and a loopback-only Compose port.
+- Unit tests, HTTP/SQLite integration tests, and two lightweight Linux CI jobs.
 
-### How It Works
+Read [validation status](docs/VALIDATION.md) before relying on this update.
+The full API, dependency resolution, and container still require successful CI.
 
-```
-AI Agent                    Zero-Trust Proxy                    Internal Tools
-   │                              │                                   │
-   │── POST /execute ────────────>│                                   │
-   │   (X-Agent-Key header)       │                                   │
-   │                              │── 1. Authenticate (hash & lookup) │
-   │                              │── 2. Check RBAC policy ──────────>│
-   │                              │── 3. Rate limit check             │
-   │                              │── 4. Execute tool ───────────────>│
-   │                              │<── Raw result ────────────────────│
-   │                              │── 5. Redact PII (email, SSN,      │
-   │                              │      phone, CC, IP)               │
-   │                              │── 6. Log audit trail              │
-   │<── Safe, redacted response──│                                   │
-```
+## Quick start on Windows
 
-### Key Features
-*   **Role-Based Access Control (RBAC):** Just because an agent wants to run `drop_table`, doesn't mean it can. The proxy checks a database to see if that specific agent is authorized for that specific tool.
-*   **API Key Hashing:** Agent API keys are stored as SHA-256 hashes — never in plain text.
-*   **Rate Limiting:** Per-IP sliding window rate limiter (60 req/min default) prevents abuse.
-*   **Audit Logging:** Every single execution attempt (allowed or blocked) is logged to the database with timestamps, arguments, and the exact result. Ready for SIEM ingestion (Datadog/Splunk).
-*   **PII Redaction:** Before returning query results to the agent, the proxy automatically scrubs Personally Identifiable Information (emails, SSNs, phone numbers, credit cards, IP addresses) so they don't leak back to external LLM providers (OpenAI/Anthropic).
-*   **CORS Support:** Pre-configured for frontend integration.
+Requires Python 3.11 or later. Use a directory you own, such as Documents/Projects.
+From this repository's root:
 
-## Project Structure
-```
-zero-trust-ai-proxy/
-├── app/
-│   ├── __init__.py       # Package init
-│   ├── main.py           # FastAPI app, /execute & /health endpoints
-│   ├── models.py         # SQLAlchemy models (Agent, Policy, AuditLog)
-│   ├── database.py       # DB engine & session config
-│   ├── security.py       # Auth, RBAC, API key hashing, PII redaction
-│   ├── middleware.py      # Rate limiting middleware
-│   └── tools.py          # Mock tool registry
-├── init_db.py            # Seeds DB with mock agent & policies
-├── requirements.txt      # Python dependencies
-├── Dockerfile            # Container build
-├── docker-compose.yml    # Docker orchestration
-└── README.md
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe init_db.py --key-file .secrets\devops-bot.key
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers --no-access-log --limit-concurrency 100
 ```
 
-## Getting Started
+In a second terminal, from the same folder:
 
-### 1. Setup
+```powershell
+.\.venv\Scripts\python.exe examples\call_proxy.py --key-file .secrets\devops-bot.key
+.\.venv\Scripts\python.exe examples\call_proxy.py --key-file .secrets\devops-bot.key --tool query_db
+```
+
+The first call returns a mock success. The second returns **403**, because the
+initial policy denies the query tool. Stop the server with Ctrl+C.
+
+## Quick start on Linux or macOS
+
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: .\venv\Scripts\activate
-pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python init_db.py --key-file .secrets/devops-bot.key
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers --no-access-log --limit-concurrency 100
 ```
 
-### 2. Initialize Database (Mock Data)
+In another terminal:
+
 ```bash
-python init_db.py
+.venv/bin/python examples/call_proxy.py --key-file .secrets/devops-bot.key
 ```
-*This creates an agent named 'DevOps-Bot' with the API Key 'sk-mock-key-123' (stored as a SHA-256 hash) and gives it permission to run 'github_commit' but NOT 'query_db'.*
 
-### 3. Run the Server
+The helper reads the credential from a file, contacts only 127.0.0.1:8000, disables
+environment proxies, and refuses redirects. It does not print the key or put it
+in command-line arguments.
+
+The key file is created exclusively and is never overwritten. POSIX permissions
+are 0600; on Windows, protect the file and directory with your account's ACLs.
+Do not paste or commit the file. Only its digest is stored in SQLite.
+
+## API contract
+
+`POST /execute` requires one `X-Agent-Key` header and a UTF-8
+`application/json` body with exactly `tool_name` and `args`.
+
+| Tool | Arguments | Seeded permission |
+| --- | --- | --- |
+| github_commit | Exactly `repo` in owner/name form and a nonempty `message` of at most 512 characters. | Allowed |
+| query_db | Exactly `query: "SELECT * FROM demo_users"`. This selects a fixed mock fixture, not an SQL interpreter. | Denied |
+
+Example body:
+
+```json
+{"tool_name":"github_commit","args":{"repo":"demo/example","message":"Example mock commit"}}
+```
+
+Output includes `status: "mock_success"`. Commit messages are not echoed.
+Response redaction preserves valid JSON; sensitive numeric values may become
+redaction strings. It is intentionally conservative and may redact benign data.
+
+The request reader rejects duplicate content headers, duplicate JSON keys,
+nonfinite numbers, compression, more than 10 nested levels, more than 2,000 JSON
+nodes, and bodies above 32 KiB. The default body-read deadline is five seconds.
+Results have a separate 32 KiB serialized limit, bounded nesting/node counts, and
+4,096-character string limits.
+
+| Status | Meaning |
+| --- | --- |
+| 200 | Authorized mock tool completed and audit finalization succeeded. |
+| 400 / 413 / 415 / 422 | Invalid structure, oversized input, unsupported content, or invalid arguments. |
+| 401 / 403 | Authentication failed or the tool policy denied execution. |
+| 408 / 429 | Body-read deadline or request limit reached. |
+| 502 | Connector failure or unacceptable output; internal details are withheld. |
+| 503 | Audit storage could not persist required state. Do not blindly retry a future real connector. |
+
+`X-Request-ID` is generated by the server. `GET /health` is a liveness check
+only; it does not certify database/connector readiness.
+
+## Auditing and permissions
+
+New rows go into `audit_events_v2`: request ID, timestamps, authenticated agent ID
+when known, registered tool name when known, outcome, and status code.
+Raw keys, headers, client IPs, arguments, results, and exception messages are not
+written there.
+
+The endpoint records an attempt before processing, then records authorized intent
+before calling a tool. Missing credentials, invalid requests, policy denials, and
+rate-limit rejections are finalized when storage is available. If storage fails,
+execution fails closed; a failure after a connector runs leaves an authorized
+intent for reconciliation and returns no result.
+
+Host rejections, CORS preflights, unknown routes, process crashes, and unavailable
+storage are outside a guarantee of a completed audit row. Old `audit_logs` data
+is retained; see [migration guidance](docs/MIGRATION.md).
+
+Permissions are a **per-agent tool allowlist**, not a full role or tenant policy
+engine. Missing permission denies access; an explicit deny wins over duplicate
+allow rows. There is no remotely accessible policy-management API.
+
+## Configuration
+
+Environment variables are read when the application is created.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| ZT_DATABASE_URL | sqlite:///./zero_trust.db | SQLite only in this version. |
+| ZT_ALLOWED_HOSTS | localhost,127.0.0.1 | Explicit comma-separated Host allowlist; no wildcard. |
+| ZT_CORS_ORIGINS | Empty | Optional explicit browser origins; credentials/cookies remain disabled. |
+| ZT_ENABLE_DOCS | false | Enable local /docs and /openapi.json. |
+| ZT_RATE_LIMIT | 60 | Accepted requests per peer-IP window, maximum 1,000. |
+| ZT_RATE_WINDOW | 60 | Seconds per window, maximum 3,600. |
+| ZT_RATE_CLIENTS | 1024 | Maximum active peer-IP buckets, maximum 10,000. |
+| ZT_BODY_TIMEOUT | 5 | Body-read timeout in seconds, maximum 60. |
+
+No dotenv loader is installed: set environment variables explicitly in your shell
+or deployment environment. Invalid configuration fails startup.
+
+## Docker
+
 ```bash
-# Locally
-uvicorn app.main:app --reload
-
-# Or via Docker
-docker-compose up --build
+docker compose up --build -d
+docker compose exec proxy python init_db.py --key-file /data/devops-bot.key
+docker compose exec proxy python call_proxy.py --key-file /data/devops-bot.key
 ```
 
-### 4. Test it!
+The image runs as UID 10001. Compose publishes only 127.0.0.1:8000, drops Linux
+capabilities, and uses a read-only root filesystem with a writable data volume.
+It does not bind-mount the source or an uninitialized host database file.
 
-**Authorized Request (Will Succeed):**
+Run `docker compose down` to stop. The named volume retains keys and database
+state. Do not remove the volume unless you intend to delete that data.
+
+## Tests and maintenance
+
+After installing `requirements-dev.txt`:
+
 ```bash
-curl -X POST "http://127.0.0.1:8000/execute" \
-     -H "X-Agent-Key: sk-mock-key-123" \
-     -H "Content-Type: application/json" \
-     -d '{"tool_name": "github_commit", "args": {"repo": "internal-frontend", "message": "fix bug"}}'
+python -m unittest discover -s tests/unit -v
+python -m unittest discover -s tests/integration -v
+python -m pip check
 ```
 
-**Unauthorized Request (Will be Blocked & Logged):**
-```bash
-curl -X POST "http://127.0.0.1:8000/execute" \
-     -H "X-Agent-Key: sk-mock-key-123" \
-     -H "Content-Type: application/json" \
-     -d '{"tool_name": "query_db", "args": {"query": "SELECT * FROM users"}}'
-```
+The unit suite requires only Python. The integration suite requires the actual
+FastAPI, HTTPX, and SQLAlchemy packages and does not silently skip missing
+dependencies. CI also builds the image, runs Gitleaks, and checks runtime
+dependency advisories. [View runs](https://github.com/raghu-007/zero-trust-ai-proxy/actions).
 
-**Health Check:**
-```bash
-curl http://127.0.0.1:8000/health
-```
+Runtime and test packages have direct version pins. There is no fully resolved,
+hash-locked transitive dependency file yet; dependency resolution still needs
+verification. Dependabot proposes package, Action, and Docker base updates.
 
-## API Documentation
-
-Once the server is running, visit:
-- **Swagger UI:** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- **ReDoc:** [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
-
-## Roadmap
-- [ ] PostgreSQL / MySQL support (replace SQLite)
-- [ ] Redis-backed rate limiting
-- [ ] JWT token authentication
-- [ ] Admin dashboard for managing agents & policies
-- [ ] Webhook notifications for blocked attempts
-- [ ] Microsoft Presidio integration for advanced PII detection
-- [ ] OpenTelemetry tracing
-- [ ] Input sanitization / prompt injection detection
+See [SECURITY.md](SECURITY.md), [migration notes](docs/MIGRATION.md),
+[architecture and limits](docs/ARCHITECTURE.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
+Original repository content is under the [MIT License](LICENSE).

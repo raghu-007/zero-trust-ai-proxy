@@ -1,5 +1,8 @@
 # Environments
 .env
+.env.*
+.secrets/
+*.key
 .venv
 env/
 venv/
@@ -11,6 +14,9 @@ venv.bak/
 *.sqlite3
 *.db
 zero_trust.db
+*.db-shm
+*.db-wal
+*.db-journal
 
 # Python
 __pycache__/
